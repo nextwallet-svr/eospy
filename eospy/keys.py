@@ -36,7 +36,7 @@ class EOSKey :
         match = re.search('^PVT_([A-Za-z0-9]+)_([A-Za-z0-9]+)$', private_str)
         if not match :
             # legacy WIF - format            
-            version_key = self._check_decode(private_str, 'sha256x2')
+            version_key = EOSKey._check_decode(private_str, 'sha256x2')
             # ensure first 2 chars == 0x80
             version = int(version_key[0:2],16)
             if not version == 0x80 :
@@ -46,7 +46,7 @@ class EOSKey :
             format = 'WIF'
         else :
             key_type, key_string = match.groups()
-            private_key = self._check_decode(key_string, key_type)
+            private_key = EOSKey._check_decode(key_string, key_type)
             format = 'PVT'
         return (private_key, format, key_type)
 
@@ -56,7 +56,8 @@ class EOSKey :
         seed = sha256(ba)
         return ecdsa.util.PRNG(seed)
 
-    def _check_encode(self, key_buffer, key_type=None) :
+    @staticmethod
+    def _check_encode(key_buffer, key_type=None) :
         '''    '''
         if isinstance(key_buffer, bytes) :
             key_buffer = key_buffer.decode()
@@ -69,8 +70,9 @@ class EOSKey :
                 check += hexlify(bytearray(key_type,'utf-8')).decode()
             chksum = ripemd160(unhexlify(check))[:8]
         return base58.b58encode(unhexlify(key_buffer+chksum))
-   
-    def _check_decode(self, key_string, key_type=None) :
+
+    @staticmethod
+    def _check_decode(key_string, key_type=None) :
         '''    '''
         buffer = hexlify(base58.b58decode(key_string)).decode()
         chksum = buffer[-8:]
@@ -89,8 +91,8 @@ class EOSKey :
             raise ValueError('checksums do not match: {0} != {1}'.format(chksum, newChk))
         return key
 
-
-    def _recover_key(self, digest, signature, i) :
+    @staticmethod
+    def _recover_key(digest, signature, i) :
         ''' Recover the public key from the sig
             http://www.secg.org/sec1-v2.pdf
         '''
@@ -119,28 +121,28 @@ class EOSKey :
             of the public key from the signature
         '''
         for i in range(0,4) :
-            p = self._recover_key(digest, signature, i)
+            p = EOSKey._recover_key(digest, signature, i)
             if (p.to_string() == self._vk.to_string() ) :
                 return i
 
-    def _compress_pubkey(self) :
+    @staticmethod
+    def _compress_pubkey(point, order) :
         ''' '''
-        order = self._sk.curve.generator.order()
-        p = self._vk.pubkey.point
+        p = point
         x_str = ecdsa.util.number_to_string(p.x(), order)
         hex_data = bytearray(chr(2 + (p.y() & 1)), 'utf-8')
         compressed = hexlify(hex_data + x_str).decode()
         return compressed
-                
+
     def to_public(self) :
         ''' '''
-        cmp = self._compress_pubkey()
-        return 'EOS' + self._check_encode(cmp).decode()
-        
+        cmp = EOSKey._compress_pubkey(self._vk.pubkey.point, self._sk.curve.generator.order())
+        return 'EOS' + EOSKey._check_encode(cmp).decode()
+
     def to_wif(self) :
         ''' '''
         pri_key = '80' + hexlify(self._sk.to_string()).decode()
-        return self._check_encode(pri_key, 'sha256x2').decode()
+        return EOSKey._check_encode(pri_key, 'sha256x2').decode()
 
     def sign(self, digest) :
         ''' '''
@@ -184,9 +186,13 @@ class EOSKey :
         # pack
         sigstr = struct.pack('<B', i) + sig
         # encode
-        return 'SIG_K1_' + self._check_encode(hexlify(sigstr), 'K1').decode()
+        return 'SIG_K1_' + EOSKey._check_encode(hexlify(sigstr), 'K1').decode()
 
     def verify(self, encoded_sig, digest) :
+        return self.recover_pubkey(encoded_sig, digest) == self.to_public()
+
+    @staticmethod
+    def recover_pubkey(encoded_sig, digest):
         ''' '''
         # remove SIG_ prefix
         encoded_sig = encoded_sig[4:]
@@ -195,12 +201,12 @@ class EOSKey :
         if curvePre != 'K1' :
             raise TypeError('Unsupported curve prefix {}'.format(curvePre))
 
-        decoded_sig = self._check_decode(encoded_sig[3:], curvePre)
+        decoded_sig = EOSKey._check_decode(encoded_sig[3:], curvePre)
         # first 2 bytes are recover param
         recover_param = hex_to_int(decoded_sig[:2]) - 4 - 27
         # use sig
         sig = decoded_sig[2:]
-        # verify sig
-        p = self._recover_key(unhexlify(digest), unhexlify(sig), recover_param)
-        return p.verify_digest(unhexlify(sig), unhexlify(digest), sigdecode=ecdsa.util.sigdecode_string)
-        
+        # recover verifykey
+        vk = EOSKey._recover_key(unhexlify(digest), unhexlify(sig), recover_param)
+        cmp = EOSKey._compress_pubkey(vk.pubkey.point, vk.pubkey.generator.order())
+        return 'EOS' + EOSKey._check_encode(cmp).decode()
